@@ -11,6 +11,16 @@
 *.sln.docstates
 *.env
 
+# Application settings with secrets
+appsettings.Development.json
+
+# User uploads and generated files
+wwwroot/uploads/
+
+# User secrets
+[Uu]ser[Ss]ecrets/
+.user-secrets/
+
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 
