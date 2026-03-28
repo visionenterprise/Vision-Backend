@@ -40,7 +40,7 @@ if (!OperatingSystem.IsWindows())
 AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 
 // Configure Entity Framework Core with PostgreSQL
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+var connectionString = ResolveDatabaseConnectionString(builder.Configuration);
 if (string.IsNullOrWhiteSpace(connectionString))
 {
     throw new InvalidOperationException("DefaultConnection is not configured.");
@@ -49,7 +49,7 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseNpgsql(connectionString, npgsql => npgsql.EnableRetryOnFailure()));
 
 // Configure CORS for Angular dev server (port 4200), production frontends, and Flutter web
-var _allowedOrigins = new[]
+var defaultAllowedOrigins = new[]
 {
     // Angular dev
     "http://localhost:4200",
@@ -62,11 +62,19 @@ var _allowedOrigins = new[]
     "https://vision-managementsystem.in",
     "https://dev-app.vision-managementsystem.in",
 };
+var configuredAllowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>();
+var allowedOrigins = (configuredAllowedOrigins is { Length: > 0 }
+        ? configuredAllowedOrigins
+        : defaultAllowedOrigins)
+    .Where(origin => !string.IsNullOrWhiteSpace(origin))
+    .Select(origin => origin.Trim())
+    .Distinct(StringComparer.OrdinalIgnoreCase)
+    .ToArray();
 builder.Services.AddCors(options =>
 {
     options.AddPolicy(name: "AllowVisionApp",
         policy => {
-            policy.WithOrigins(_allowedOrigins)
+            policy.WithOrigins(allowedOrigins)
                   .AllowAnyHeader()
                   .AllowAnyMethod();
         });
@@ -109,15 +117,12 @@ builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection("Jwt"));
 builder.Services.Configure<GcpStorageOptions>(builder.Configuration.GetSection("GcpStorage"));
 
 // Storage mode selection:
-// - If service-account config exists -> GCS storage
+// - If bucket config exists -> GCS storage
 // - Else -> local storage fallback (keeps app usable in dev)
 var storageOptions = builder.Configuration.GetSection("GcpStorage").Get<GcpStorageOptions>() ?? new GcpStorageOptions();
-var hasGcsServiceAccountConfig =
-    !string.IsNullOrWhiteSpace(storageOptions.ServiceAccountJsonBase64)
-    || !string.IsNullOrWhiteSpace(storageOptions.ServiceAccountJson)
-    || !string.IsNullOrWhiteSpace(storageOptions.ServiceAccountKeyPath);
+var hasGcsConfig = !string.IsNullOrWhiteSpace(storageOptions.BucketName);
 
-if (hasGcsServiceAccountConfig)
+if (hasGcsConfig)
 {
     builder.Services.AddSingleton(_ =>
     {
@@ -132,9 +137,13 @@ if (hasGcsServiceAccountConfig)
         {
             credential = GoogleCredential.FromJson(storageOptions.ServiceAccountJson);
         }
-        else
+        else if (!string.IsNullOrWhiteSpace(storageOptions.ServiceAccountKeyPath))
         {
             credential = GoogleCredential.FromFile(storageOptions.ServiceAccountKeyPath);
+        }
+        else
+        {
+            credential = GoogleCredential.GetApplicationDefault();
         }
 
         if (credential.IsCreateScopedRequired)
@@ -263,4 +272,46 @@ using (var scope = app.Services.CreateScope())
 await app.Services.SeedInitialUsersAsync();
 
 app.Run();
+
+static string ResolveDatabaseConnectionString(IConfiguration configuration)
+{
+    var configuredConnection = configuration.GetConnectionString("DefaultConnection");
+    if (!string.IsNullOrWhiteSpace(configuredConnection))
+    {
+        return configuredConnection.Trim();
+    }
+
+    var databaseUrl = configuration["DATABASE_URL"];
+    if (string.IsNullOrWhiteSpace(databaseUrl))
+    {
+        return string.Empty;
+    }
+
+    databaseUrl = databaseUrl.Trim();
+
+    if (databaseUrl.StartsWith("Host=", StringComparison.OrdinalIgnoreCase) ||
+        databaseUrl.Contains(";", StringComparison.Ordinal))
+    {
+        return databaseUrl;
+    }
+
+    if (Uri.TryCreate(databaseUrl, UriKind.Absolute, out var uri) &&
+        (uri.Scheme.Equals("postgres", StringComparison.OrdinalIgnoreCase) ||
+         uri.Scheme.Equals("postgresql", StringComparison.OrdinalIgnoreCase)))
+    {
+        var userInfo = uri.UserInfo.Split(':', 2, StringSplitOptions.TrimEntries);
+        var username = userInfo.Length > 0 ? Uri.UnescapeDataString(userInfo[0]) : string.Empty;
+        var password = userInfo.Length > 1 ? Uri.UnescapeDataString(userInfo[1]) : string.Empty;
+        var database = uri.AbsolutePath.Trim('/');
+
+        if (string.IsNullOrWhiteSpace(database))
+        {
+            throw new InvalidOperationException("DATABASE_URL is missing the database name in its path segment.");
+        }
+
+        return $"Host={uri.Host};Port={uri.Port};Database={database};Username={username};Password={password};SSL Mode=Require;Trust Server Certificate=true";
+    }
+
+    throw new InvalidOperationException("DATABASE_URL is set but not in a supported PostgreSQL format.");
+}
 
