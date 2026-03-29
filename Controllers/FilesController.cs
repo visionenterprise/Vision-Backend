@@ -1,8 +1,10 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using vision_backend.Application.Interfaces;
 
 namespace vision_backend.Controllers;
 
+[AllowAnonymous]
 [ApiController]
 [Route("api/files")]
 public class FilesController : ControllerBase
@@ -15,6 +17,7 @@ public class FilesController : ControllerBase
     }
 
     [HttpGet("{**key}")]
+    [ResponseCache(Duration = 86400, Location = ResponseCacheLocation.Any)]
     public async Task<IActionResult> GetFile(string key)
     {
         if (string.IsNullOrWhiteSpace(key))
