@@ -21,6 +21,7 @@ public class GcsStorageService : IStorageService
     private readonly string _localUploadRoot;
     private readonly string _publicBaseUrl;
     private readonly string _bucket;
+    private readonly bool _enableLocalStorage;
     private static readonly TimeSpan DefaultExpiry = TimeSpan.FromHours(1);
     private static readonly TimeSpan SignedUrlCacheDuration = TimeSpan.FromMinutes(10);
     private static readonly FileExtensionContentTypeProvider ContentTypeProvider = new();
@@ -43,6 +44,7 @@ public class GcsStorageService : IStorageService
             ? "http://localhost:5243"
             : options.Value.PublicBaseUrl.TrimEnd('/');
         _bucket = options.Value.BucketName;
+        _enableLocalStorage = options.Value.EnableLocalStorage;
         _signerServiceAccountEmail = string.IsNullOrWhiteSpace(options.Value.SignerServiceAccountEmail)
             ? null
             : options.Value.SignerServiceAccountEmail;
@@ -52,13 +54,28 @@ public class GcsStorageService : IStorageService
             throw new InvalidOperationException("GcpStorage:BucketName is not configured.");
         }
 
+        // Prefer IAM-based signing (signBlob API) when a service account email is configured.
+        // This works with user ADC credentials, which cannot sign URLs directly.
+        // Falls back to direct credential signing (works with service account key files).
+        if (!string.IsNullOrWhiteSpace(_signerServiceAccountEmail))
+        {
+            _urlSigner = CreateIamBackedUrlSigner() ?? TryCreateDirectSigner();
+        }
+        else
+        {
+            _urlSigner = TryCreateDirectSigner();
+        }
+    }
+
+    private UrlSigner? TryCreateDirectSigner()
+    {
         try
         {
-            _urlSigner = UrlSigner.FromCredential(_credential);
+            return UrlSigner.FromCredential(_credential);
         }
         catch
         {
-            _urlSigner = CreateIamBackedUrlSigner();
+            return null;
         }
     }
 
@@ -74,8 +91,13 @@ public class GcsStorageService : IStorageService
 
             return key;
         }
-        catch
+        catch (Exception ex)
         {
+            if (!_enableLocalStorage)
+            {
+                throw new InvalidOperationException($"GCS upload failed for key '{key}' and local storage is disabled.", ex);
+            }
+
             var normalized = NormalizeKey(key);
             var localPath = GetLocalPath(normalized);
             var localDirectory = Path.GetDirectoryName(localPath);
@@ -100,6 +122,8 @@ public class GcsStorageService : IStorageService
     {
         if (IsLocalKey(key))
         {
+            if (!_enableLocalStorage)
+                return;
             var localPath = GetLocalPath(NormalizeKey(key));
             if (File.Exists(localPath))
             {
@@ -112,12 +136,19 @@ public class GcsStorageService : IStorageService
         {
             await _storageClient.DeleteObjectAsync(_bucket, key);
         }
-        catch
+        catch (Exception ex)
         {
-            var localPath = GetLocalPath(NormalizeKey(key));
-            if (File.Exists(localPath))
+            if (_enableLocalStorage)
             {
-                File.Delete(localPath);
+                var localPath = GetLocalPath(NormalizeKey(key));
+                if (File.Exists(localPath))
+                {
+                    File.Delete(localPath);
+                }
+            }
+            else
+            {
+                Console.WriteLine($"[Storage] GCS delete failed for key '{key}': {ex.Message}");
             }
         }
     }
@@ -164,11 +195,14 @@ public class GcsStorageService : IStorageService
             }
             catch
             {
-                return BuildAbsoluteUrl($"/api/files/{EscapeObjectKey(key)}");
+                // Signing not available (e.g. using user ADC instead of a service account key).
+                // Fall back to direct public GCS URL. Requires the bucket to grant
+                // allUsers:objectViewer (appropriate for the dev bucket).
+                return $"https://storage.googleapis.com/{_bucket}/{key}";
             }
         }
 
-        return BuildAbsoluteUrl($"/api/files/{EscapeObjectKey(key)}");
+        return $"https://storage.googleapis.com/{_bucket}/{key}";
     }
 
     public async Task<(Stream Stream, string ContentType)> OpenReadAsync(string key)

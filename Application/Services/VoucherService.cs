@@ -485,11 +485,8 @@ public class VoucherService : IVoucherService
             voucher.UpdatedAt = DateTime.Now;
             await _voucherRepository.UpdateAsync(voucher);
 
-            var updated = await _voucherRepository.GetByIdAsync(voucherId)
-                ?? throw new InvalidOperationException("Failed to retrieve updated voucher.");
-
             Console.WriteLine($"[Upload Complete] Voucher {voucherId} updated successfully");
-            return MapToResponse(updated);
+            return MapToResponse(voucher);
         }
         catch (Exception ex)
         {

@@ -11,8 +11,8 @@
 *.sln.docstates
 *.env
 
-# Application settings with secrets
-appsettings.Development.json
+# Local developer overrides (never commit)
+appsettings.*.local.json
 
 # User uploads and generated files
 wwwroot/uploads/

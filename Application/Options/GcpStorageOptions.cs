@@ -5,6 +5,7 @@ public class GcpStorageOptions
     public string ProjectId { get; set; } = string.Empty;
     public string BucketName { get; set; } = string.Empty;
     public string PublicBaseUrl { get; set; } = string.Empty;
+    public bool EnableLocalStorage { get; set; } = false;
     public string SignerServiceAccountEmail { get; set; } = string.Empty;
     public string ImpersonateServiceAccountEmail { get; set; } = string.Empty;
     public string ServiceAccountKeyPath { get; set; } = string.Empty;

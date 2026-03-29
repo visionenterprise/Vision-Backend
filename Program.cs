@@ -48,36 +48,17 @@ if (string.IsNullOrWhiteSpace(connectionString))
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseNpgsql(connectionString, npgsql => npgsql.EnableRetryOnFailure()));
 
-// Configure CORS for Angular dev server (port 4200), production frontends, and Flutter web
-var defaultAllowedOrigins = new[]
-{
-    // Angular dev
-    "http://localhost:4200",
-    "https://localhost:4200",
-    // Flutter web dev
-    "http://localhost:5000",
-    "http://localhost:8080",
-    // Production frontends
-    "http://vision-managementsystem.in",
-    "https://vision-managementsystem.in",
-    "https://dev-app.vision-managementsystem.in",
-};
-var configuredAllowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>();
-var allowedOrigins = (configuredAllowedOrigins is { Length: > 0 }
-        ? configuredAllowedOrigins
-        : defaultAllowedOrigins)
-    .Where(origin => !string.IsNullOrWhiteSpace(origin))
-    .Select(origin => origin.Trim())
-    .Distinct(StringComparer.OrdinalIgnoreCase)
-    .ToArray();
+// Configure CORS from appsettings (overridable by env vars like Cors__AllowedOrigins__0)
+var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? Array.Empty<string>();
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy(name: "AllowVisionApp",
-        policy => {
-            policy.WithOrigins(allowedOrigins)
-                  .AllowAnyHeader()
-                  .AllowAnyMethod();
-        });
+    options.AddDefaultPolicy(policy =>
+    {
+        policy.WithOrigins(allowedOrigins)
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials();
+    });
 });
 
 builder.Services.AddControllers();
@@ -161,11 +142,18 @@ if (hasGcsConfig)
     });
 
     builder.Services.AddSingleton<IStorageService, GcsStorageService>();
+    Console.WriteLine($"[Storage] Using GCS bucket '{storageOptions.BucketName}' (local fallback: {storageOptions.EnableLocalStorage})");
+}
+else if (storageOptions.EnableLocalStorage)
+{
+    Console.WriteLine("[Storage] No GCS bucket configured. Using local storage under wwwroot/uploads.");
+    builder.Services.AddSingleton<IStorageService, LocalStorageService>();
 }
 else
 {
-    Console.WriteLine("[Storage] GCS credentials not found. Using local storage fallback under wwwroot/uploads.");
-    builder.Services.AddSingleton<IStorageService, LocalStorageService>();
+    throw new InvalidOperationException(
+        "GcpStorage:BucketName is not configured and EnableLocalStorage is false. " +
+        "Either configure a GCS bucket or enable local storage.");
 }
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -254,7 +242,7 @@ app.UseSwaggerUI(c =>
 
 app.UseStaticFiles();
 
-app.UseCors("AllowVisionApp");
+app.UseCors();
 
 app.UseAuthentication();
 app.UseAuthorization();
